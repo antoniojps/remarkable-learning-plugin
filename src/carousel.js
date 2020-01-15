@@ -3,6 +3,7 @@
 const TOKENS = {
   CAROUSEL: 'carousel',
   CAROUSEL_OPEN: 'carousel_open',
+  CAROUSEL_CLOSE: 'carousel_close',
 }
 
 /**
@@ -11,68 +12,100 @@ const TOKENS = {
  */
 export const parser = (
   state,
+  startLine,
+  endLine,
+  silent
 ) => {
-  state.tokens.forEach((token, index) => {
-    if (token.type !== 'inline') return false
-    const DOM = new DOMParser()
-    const generatedDocument = DOM.parseFromString(token.content, 'text/html')
-    const carouselElements = generatedDocument.getElementsByTagName('carousel')
-    const carousel = carouselElements.length === 1 ? carouselElements[0] : null
-    if (!carousel) return false
-    const pictureElements = generatedDocument.getElementsByTagName('picture')
-    const picturesArr = Array.from(pictureElements)
-    const pictures = picturesArr.map(picture => {
-      const attributes = Array.from(picture.attributes)
-      return attributes.map(attribute => ({ key: attribute.name, value: attribute.value }))
-    })
+  // position of line start in src + number of spaces used to indent it
+  const lineStart = state.bMarks[startLine] + state.tShift[startLine]
+  // position of line end in src
+  const lineEnd = state.eMarks[startLine]
 
-    if (pictures.length === 0) return false
+  // check if line starts with '<'
+  const tagMarker = state.src.charCodeAt(lineStart);
 
-    // Register token
-    state.tokens[index] = {
-      type: TOKENS.CAROUSEL_OPEN,
-      level: state.level,
-      lines: token.lines,
-      pictures,
-      block: true
+  // Wrong marker
+  if (tagMarker !== 60 /* '<' */) return false;
+
+  // check if enough chars for <carousel>
+  const tag = '<carousel>'
+  const tagNumberOfChars = tag.length
+  if (lineStart + tagNumberOfChars > lineEnd) return false;
+
+  const lineText = state.src.slice(lineStart, lineEnd).trim();
+  if (lineText !== tag) return false
+
+  if (silent) return true;
+
+  // scan for tag ending
+  let nextLine = startLine;
+  let hasEnding = false;
+  const tagClosed = '</carousel>'
+
+  while (nextLine < endLine) {
+    nextLine++;
+
+    if (nextLine >= endLine) break;
+
+    const nextLineStart = state.bMarks[nextLine] + state.tShift[nextLine];
+    const nextLineEnd = state.eMarks[nextLine];
+
+    if (state.src.charCodeAt(nextLineStart) !== tagMarker) continue;
+    const nextLineText = state.src.slice(nextLineStart, nextLineEnd).trim();
+    if (nextLineText === tagClosed) {
+      hasEnding = true;
+      break;
     }
+  }
 
-    const prevTokenIndex = index - 1
-    const nextTokenIndex = index + 1
+  // Ensure nested parsing stops at delimiting block
+  const oldMax = state.lineMax;
+  state.lineMax = nextLine + (hasEnding ? -1 : 0);
+  const oldParentType = state.parentType;
+  state.parentType = 'carousel';
 
-    const prevToken = state.tokens[prevTokenIndex]
-    const nextToken = state.tokens[nextTokenIndex]
+  let lines = [startLine, 0]
 
-    if (prevToken.type === 'paragraph_open') state.tokens.splice(prevTokenIndex, 1)
-    if (nextToken.type === 'paragraph_close') state.tokens.splice(nextTokenIndex, 1)
+  // Let register token and progress
+  state.tokens.push({
+    type: TOKENS.CAROUSEL_OPEN,
+    level: state.level,
+    lines,
+  });
+  state.parser.tokenize(state, startLine + 1, nextLine);
+  state.tokens.push({
+    type: TOKENS.CAROUSEL_CLOSE,
+    level: state.level
+  });
 
-    state.line = token.lines[1] + 1
-    return true
-  })
-  console.log(state)
+  // Revert
+  lines[1] = nextLine;
+  state.line = nextLine + (hasEnding ? 1 : 0);
+  state.lineMax = oldMax;
+  state.parentType = oldParentType;
+
+  return true
 };
 
 /**
- * Remarkable carousel renderer.
+ * Remarkable admonition renderer.
  */
-export function openRenderer() {
-  return (tokens, idx) => {
-    const token = tokens[idx];
-    const { pictures } = token
-    const picturesElement = pictures.map(attributes => {
-      const attributesStringArray = attributes.reduce((acc, current) => {
-        const currentAttributeString = `${current.key}=${current.value}`
-        acc.push(currentAttributeString)
-        return acc
-      }, [])
-      const attributesString = attributesStringArray.join(' ')
-      return `<picture ${attributesString} />`
-    })
-    return `
-<carousel>
-  ${picturesElement}
-</carousel>
-`;
+export function openRenderer(
+  admonitionOpts
+) {
+  return (tokens, idx, options, env) => {
+    return `<carousel>`;
+  };
+}
+
+/**
+ * Callout closing tag renderer
+ */
+export function closeRenderer(
+  opts
+){
+  return (tokens, idx, options, env) => {
+    return `</carousel>`;
   };
 }
 
@@ -82,6 +115,8 @@ const plugin = (
 ) => {
   md.block.ruler.before('htmlblock', TOKENS.CAROUSEL, parser, opts);
   md.renderer.rules[TOKENS.CAROUSEL_OPEN] = openRenderer(opts);
+  md.renderer.rules[TOKENS.CAROUSEL_CLOSE] = closeRenderer(opts);
+
 };
 
 export default plugin
